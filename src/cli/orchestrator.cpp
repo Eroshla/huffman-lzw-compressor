@@ -3,10 +3,13 @@
 #include "compression/lzw.hpp"
 #include "decompression/huffman.hpp"
 #include "decompression/lzw.hpp"
+#include "compressor.hpp"
 #include "utils/metrics.hpp"
+
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <memory>
 #include <iomanip>
 #include <filesystem>
 
@@ -33,11 +36,7 @@ static void writeFile(const std::string& filename, const std::vector<uint8_t>& d
 }
 
 static bool verifyIntegrity(const std::vector<uint8_t>& original, const std::vector<uint8_t>& decompressed) {
-    if (original.size() != decompressed.size()) return false;
-    for (size_t i = 0; i < original.size(); ++i) {
-        if (original[i] != decompressed[i]) return false;
-    }
-    return true;
+    return original == decompressed;
 }
 
 static void printCompressReport(const std::string& filename, size_t originalSize,
@@ -80,11 +79,23 @@ static void printDecompressReport(const std::string& filename,
     std::cout << "-------------------------------------------\n";
 }
 
+static std::pair<std::vector<uint8_t>, double> run_compress(Compressor& comp, const std::vector<uint8_t>& data) {
+    auto t0 = Metrics::start();
+    auto result = comp.compress(data);
+    return {result, Metrics::stop(t0)};
+}
+
+static std::pair<std::vector<uint8_t>, double> run_decompress(Decompressor& decomp, const std::vector<uint8_t>& data) {
+    auto t0 = Metrics::start();
+    auto result = decomp.decompress(data);
+    return {result, Metrics::stop(t0)};
+}
+
 void Orchestrator::run(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Uso: " << argv[0] << " <acao> <arquivo_original>\n";
-        std::cerr << "acao = compress | decompress\n";
-        std::cerr << "O programa ira rodar Huffman e LZW automaticamente para comparar.\n";
+        std::cerr << "Uso: " << argv[0] << " <acao> <arquivo_original>\n"
+                  << "acao = compress | decompress\n"
+                  << "O programa ira rodar Huffman e LZW automaticamente para comparar.\n";
         return;
     }
 
@@ -93,66 +104,55 @@ void Orchestrator::run(int argc, char* argv[]) {
 
     try {
         std::filesystem::create_directory("output");
-        std::string baseFilename = std::filesystem::path(filename).filename().string();
+        std::string base = std::filesystem::path(filename).filename().string();
 
         if (action == "compress") {
-            std::vector<uint8_t> originalData = readFile(filename);
-            size_t originalSize = originalData.size();
+            std::vector<uint8_t> original = readFile(filename);
+            size_t originalSize = original.size();
 
             HuffmanCompressor huffComp;
-            auto startHuff = Metrics::start();
-            std::vector<uint8_t> huffCompressed = huffComp.compress(originalData);
-            double huffCompTime = Metrics::stop(startHuff);
-            size_t huffSize = huffCompressed.size();
-            writeFile("output/" + baseFilename + ".huff", huffCompressed);
-
             LZWCompressor lzwComp;
-            auto startLzw = Metrics::start();
-            std::vector<uint8_t> lzwCompressed = lzwComp.compress(originalData);
-            double lzwCompTime = Metrics::stop(startLzw);
-            size_t lzwSize = lzwCompressed.size();
-            writeFile("output/" + baseFilename + ".lzw", lzwCompressed);
 
-            double huffRatio = Metrics::calculate_ratio(huffSize, originalSize);
-            double huffSavings = Metrics::calculate_savings(huffSize, originalSize);
-            double lzwRatio = Metrics::calculate_ratio(lzwSize, originalSize);
-            double lzwSavings = Metrics::calculate_savings(lzwSize, originalSize);
+            auto [huffData, huffTime] = run_compress(huffComp, original);
+            auto [lzwData,  lzwTime]  = run_compress(lzwComp,  original);
+
+            writeFile("output/" + base + ".huff", huffData);
+            writeFile("output/" + base + ".lzw",  lzwData);
 
             printCompressReport(filename, originalSize,
-                        huffSize, huffRatio, huffSavings, huffCompTime,
-                        lzwSize, lzwRatio, lzwSavings, lzwCompTime);
+                huffData.size(),
+                Metrics::calculate_ratio(huffData.size(), originalSize),
+                Metrics::calculate_savings(huffData.size(), originalSize),
+                huffTime,
+                lzwData.size(),
+                Metrics::calculate_ratio(lzwData.size(), originalSize),
+                Metrics::calculate_savings(lzwData.size(), originalSize),
+                lzwTime);
 
         } else if (action == "decompress") {
-            std::string huffFile = "output/" + baseFilename + ".huff";
-            std::string lzwFile = "output/" + baseFilename + ".lzw";
-            
-            std::vector<uint8_t> huffData = readFile(huffFile);
-            std::vector<uint8_t> lzwData = readFile(lzwFile);
+            std::string huffFile = "output/" + base + ".huff";
+            std::string lzwFile  = "output/" + base + ".lzw";
 
             HuffmanDecompressor huffDecomp;
-            auto startHuff = Metrics::start();
-            std::vector<uint8_t> huffDecompressed = huffDecomp.decompress(huffData);
-            double huffDecompTime = Metrics::stop(startHuff);
-            writeFile("output/" + baseFilename + ".huff.out", huffDecompressed);
-
             LZWDecompressor lzwDecomp;
-            auto startLzw = Metrics::start();
-            std::vector<uint8_t> lzwDecompressed = lzwDecomp.decompress(lzwData);
-            double lzwDecompTime = Metrics::stop(startLzw);
-            writeFile("output/" + baseFilename + ".lzw.out", lzwDecompressed);
 
-            bool huffValid = false;
-            bool lzwValid = false;
+            auto [huffRestored, huffTime] = run_decompress(huffDecomp, readFile(huffFile));
+            auto [lzwRestored, lzwTime] = run_decompress(lzwDecomp,  readFile(lzwFile));
+
+            writeFile("output/" + base + ".huff.out", huffRestored);
+            writeFile("output/" + base + ".lzw.out",  lzwRestored);
+
+            bool huffValid = false, lzwValid = false;
             try {
-                std::vector<uint8_t> originalData = readFile(filename);
-                huffValid = verifyIntegrity(originalData, huffDecompressed);
-                lzwValid = verifyIntegrity(originalData, lzwDecompressed);
-            } catch(...) {
-                // Ignore if original is not available
-            }
+                std::vector<uint8_t> original = readFile(filename);
+                huffValid = verifyIntegrity(original, huffRestored);
+                lzwValid  = verifyIntegrity(original, lzwRestored);
+            } catch (...) {}
 
-            printDecompressReport(filename, huffDecompressed.size(), huffDecompTime, huffValid, lzwDecompressed.size(), lzwDecompTime, lzwValid);
-            
+            printDecompressReport(filename,
+                huffRestored.size(), huffTime, huffValid,
+                lzwRestored.size(),  lzwTime,  lzwValid);
+
         } else {
             std::cerr << "Acao desconhecida: " << action << "\n";
         }

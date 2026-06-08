@@ -1,12 +1,12 @@
 #ifndef HUFFMAN_COMPRESS_HPP
 #define HUFFMAN_COMPRESS_HPP
 
-#include <vector>
-#include <cstdint>
+#include "../compressor.hpp"
 
-class HuffmanCompressor {
+class HuffmanCompressor : public Compressor {
 public:
-    std::vector<uint8_t> compress(const std::vector<uint8_t>& data);
+    std::vector<uint8_t> compress(const std::vector<uint8_t>& data) override;
+    std::string name() const override { return "huffman"; }
 };
 
-#endif // HUFFMAN_COMPRESS_HPP
+#endif 
